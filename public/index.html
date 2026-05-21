@@ -16,26 +16,51 @@
     <main class="page-shell">
       <section class="hero">
         <p class="eyebrow">Vision + metadata workflow</p>
-        <h1>Generate alt text, SEO alt text, titles, and filenames from one image upload.</h1>
+        <h1>Generate alt text, SEO alt text, titles, filenames, and batch results from your images.</h1>
         <p class="intro">
-          Drop in an image, add optional SEO context, and get accessible image copy that is ready for your CMS,
-          media library, or spreadsheet.
+          Upload one image or paste a list of direct image links, then turn them into accessible image copy that is
+          ready for your CMS, media library, or spreadsheet.
         </p>
       </section>
 
       <section class="workspace">
         <form id="generator-form" class="panel controls-panel">
-          <label class="upload-zone" for="image-input" id="upload-zone">
-            <input id="image-input" name="image" type="file" accept="image/*" required />
-            <span class="upload-kicker">Upload image</span>
-            <strong id="upload-label">Choose a file or drag it here</strong>
-            <span class="upload-hint">PNG, JPG, GIF, or WebP</span>
-          </label>
+          <div class="mode-switch" role="tablist" aria-label="Generation mode">
+            <button type="button" class="mode-button is-active" data-mode="single">Single image</button>
+            <button type="button" class="mode-button" data-mode="bulk">Bulk image links</button>
+          </div>
+
+          <div id="single-mode-panel" class="mode-panel">
+            <label class="upload-zone" for="image-input" id="upload-zone">
+              <input id="image-input" name="image" type="file" accept="image/*" />
+              <span class="upload-kicker">Upload image</span>
+              <strong id="upload-label">Choose a file or drag it here</strong>
+              <span class="upload-hint">PNG, JPG, GIF, or WebP</span>
+            </label>
+          </div>
+
+          <div id="bulk-mode-panel" class="mode-panel" hidden>
+            <label class="field field-stack">
+              <span>Image links</span>
+              <textarea
+                id="bulk-image-urls"
+                name="bulkImageUrls"
+                rows="7"
+                placeholder="Paste one image URL per line&#10;https://example.com/image-1.jpg&#10;https://example.com/image-2.png"
+              ></textarea>
+            </label>
+            <p class="bulk-hint">Paste one direct image link per line. The app will fetch and analyze each image.</p>
+          </div>
 
           <div class="field-grid">
-            <label class="field">
-              <span>SEO keyword</span>
-              <input id="seo-keyword" name="seoKeyword" type="text" placeholder="e.g. organic coffee beans" />
+            <label class="field field-stack field-wide">
+              <span>SEO keywords</span>
+              <textarea
+                id="seo-keyword"
+                name="seoKeyword"
+                rows="3"
+                placeholder="Add multiple keywords separated by commas or new lines&#10;orange tabby cat, pet portrait, feline close up"
+              ></textarea>
             </label>
 
             <label class="field">
@@ -52,6 +77,14 @@
               <span>Tone</span>
               <input id="tone" name="tone" type="text" placeholder="e.g. polished and editorial" />
             </label>
+
+            <label class="field">
+              <span>Filename case</span>
+              <select id="filename-case" name="filenameCase">
+                <option value="lowercase" selected>lower case</option>
+                <option value="titlecase">Title Case</option>
+              </select>
+            </label>
           </div>
 
           <button class="generate-button" type="submit" id="generate-button">Generate metadata</button>
@@ -62,7 +95,7 @@
           <div class="preview-frame">
             <img id="image-preview" alt="" hidden />
             <div class="preview-placeholder" id="preview-placeholder">
-              The uploaded image preview will appear here.
+              The uploaded image preview will appear here in single-image mode.
             </div>
           </div>
           <dl class="image-meta" id="image-meta">
@@ -132,8 +165,43 @@
           </ul>
         </article>
       </section>
+
+      <section class="panel bulk-results-panel" id="bulk-results-panel" hidden>
+        <div class="bulk-results-header">
+          <div>
+            <p class="card-label">Bulk results</p>
+            <p class="bulk-results-subtitle">Each row contains the generated metadata for one pasted image URL.</p>
+          </div>
+          <div class="bulk-actions">
+            <button type="button" class="copy-button" id="copy-bulk-json">Copy JSON</button>
+            <button type="button" class="copy-button" id="copy-bulk-csv">Copy CSV</button>
+            <button type="button" class="copy-button" id="download-bulk-csv">Download CSV</button>
+          </div>
+        </div>
+
+        <div class="bulk-table-wrap">
+          <table class="bulk-table">
+            <thead>
+              <tr>
+                <th>Preview</th>
+                <th>Image URL</th>
+                <th>Status</th>
+                <th>Base alt text</th>
+                <th>SEO alt text</th>
+                <th>SEO title</th>
+                <th>Filename</th>
+              </tr>
+            </thead>
+            <tbody id="bulk-results-body">
+              <tr>
+                <td colspan="7" class="bulk-empty">Bulk results will appear here.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script src="/app.js" type="module"></script>
   </body>
-  </html>
+</html>

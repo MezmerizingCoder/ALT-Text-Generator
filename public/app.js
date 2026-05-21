@@ -4,11 +4,22 @@ const uploadZone = document.querySelector("#upload-zone");
 const uploadLabel = document.querySelector("#upload-label");
 const statusMessage = document.querySelector("#status-message");
 const generateButton = document.querySelector("#generate-button");
+const modeButtons = document.querySelectorAll("[data-mode]");
+const singleModePanel = document.querySelector("#single-mode-panel");
+const bulkModePanel = document.querySelector("#bulk-mode-panel");
+const bulkImageUrls = document.querySelector("#bulk-image-urls");
+const filenameCase = document.querySelector("#filename-case");
 const previewImage = document.querySelector("#image-preview");
 const previewPlaceholder = document.querySelector("#preview-placeholder");
 const originalName = document.querySelector("#original-name");
 const imageDimensions = document.querySelector("#image-dimensions");
 const imageSize = document.querySelector("#image-size");
+const resultsGrid = document.querySelector("#results-grid");
+const bulkResultsPanel = document.querySelector("#bulk-results-panel");
+const bulkResultsBody = document.querySelector("#bulk-results-body");
+const copyBulkJsonButton = document.querySelector("#copy-bulk-json");
+const copyBulkCsvButton = document.querySelector("#copy-bulk-csv");
+const downloadBulkCsvButton = document.querySelector("#download-bulk-csv");
 
 const resultFields = {
   imageSummary: document.querySelector("#image-summary"),
@@ -23,6 +34,14 @@ const seoKeywords = document.querySelector("#seo-keywords");
 const copyButtons = document.querySelectorAll("[data-copy-target]");
 
 let selectedImage = null;
+let activeMode = "single";
+let latestBulkResults = [];
+
+modeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setMode(button.getAttribute("data-mode"));
+  });
+});
 
 imageInput.addEventListener("change", async (event) => {
   const [file] = event.target.files ?? [];
@@ -56,22 +75,60 @@ uploadZone.addEventListener("drop", async (event) => {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  if (!selectedImage) {
-    setStatus("Please upload an image first.", true);
-    return;
-  }
-
   generateButton.disabled = true;
-  setStatus("Analyzing the image and generating metadata...");
+  setStatus(
+    activeMode === "bulk"
+      ? "Fetching image links and generating metadata for each one..."
+      : "Analyzing the image and generating metadata..."
+  );
 
   try {
+    if (activeMode === "bulk") {
+      const urls = parseBulkUrls(bulkImageUrls.value);
+
+      if (urls.length === 0) {
+        throw new Error("Paste at least one image URL in the bulk links box.");
+      }
+
+      const response = await fetch("/api/generate-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrls: urls,
+          seoKeyword: document.querySelector("#seo-keyword").value.trim(),
+          brandName: document.querySelector("#brand-name").value.trim(),
+          audience: document.querySelector("#audience").value.trim(),
+          tone: document.querySelector("#tone").value.trim(),
+          filenameCase: filenameCase.value
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to generate bulk metadata.");
+      }
+
+      latestBulkResults = data.results;
+      renderBulkResults(data.results);
+      setStatus(
+        `Processed ${data.processedCount} image link${data.processedCount === 1 ? "" : "s"} with ${data.model} on local Ollama.`
+      );
+      return;
+    }
+
+    if (!selectedImage) {
+      throw new Error("Please upload an image first.");
+    }
+
     const payload = {
       imageDataUrl: selectedImage.dataUrl,
       originalFilename: selectedImage.file.name,
       seoKeyword: document.querySelector("#seo-keyword").value.trim(),
       brandName: document.querySelector("#brand-name").value.trim(),
       audience: document.querySelector("#audience").value.trim(),
-      tone: document.querySelector("#tone").value.trim()
+      tone: document.querySelector("#tone").value.trim(),
+      filenameCase: filenameCase.value
     };
 
     const response = await fetch("/api/generate", {
@@ -105,16 +162,35 @@ copyButtons.forEach((button) => {
       return;
     }
 
-    try {
-      await navigator.clipboard.writeText(text);
-      const originalLabel = button.textContent;
-      button.textContent = "Copied";
-      window.setTimeout(() => {
-        button.textContent = originalLabel;
-      }, 1500);
-    } catch (_error) {
-      setStatus("Clipboard access was blocked in this browser.", true);
-    }
+    await copyText(text, button);
+  });
+});
+
+copyBulkJsonButton.addEventListener("click", async () => {
+  if (latestBulkResults.length === 0) {
+    return;
+  }
+
+  await copyText(JSON.stringify(latestBulkResults, null, 2), copyBulkJsonButton);
+});
+
+copyBulkCsvButton.addEventListener("click", async () => {
+  if (latestBulkResults.length === 0) {
+    return;
+  }
+
+  await copyText(convertBulkResultsToCsv(latestBulkResults), copyBulkCsvButton);
+});
+
+downloadBulkCsvButton.addEventListener("click", () => {
+  if (latestBulkResults.length === 0) {
+    return;
+  }
+
+  downloadTextFile({
+    text: convertBulkResultsToCsv(latestBulkResults),
+    filename: buildBulkExportFilename("csv"),
+    mimeType: "text/csv;charset=utf-8"
   });
 });
 
@@ -143,6 +219,28 @@ async function handleSelectedFile(file) {
 
   resetResults();
   setStatus("Image ready. Add optional context and generate metadata.");
+}
+
+function setMode(mode) {
+  activeMode = mode === "bulk" ? "bulk" : "single";
+
+  modeButtons.forEach((button) => {
+    button.classList.toggle("is-active", button.getAttribute("data-mode") === activeMode);
+  });
+
+  const isBulk = activeMode === "bulk";
+  bulkModePanel.hidden = !isBulk;
+  singleModePanel.hidden = isBulk;
+  bulkResultsPanel.hidden = !isBulk;
+  resultsGrid.hidden = isBulk;
+  imageInput.required = !isBulk;
+
+  if (isBulk) {
+    resetBulkResults();
+    setStatus("Bulk mode is ready. Paste one image URL per line and generate metadata.");
+  } else {
+    setStatus(selectedImage ? "Image ready. Add optional context and generate metadata." : "");
+  }
 }
 
 function renderResults(data) {
@@ -195,9 +293,163 @@ function resetResults() {
   notesList.appendChild(note);
 }
 
+function renderBulkResults(results) {
+  bulkResultsPanel.hidden = false;
+  bulkResultsBody.replaceChildren();
+
+  if (results.length === 0) {
+    resetBulkResults();
+    return;
+  }
+
+  results.forEach((result) => {
+    const row = document.createElement("tr");
+
+    row.appendChild(createPreviewCell(result));
+    row.appendChild(createLinkCell(result.sourceUrl));
+    row.appendChild(createCell(result.success ? "Success" : "Error", result.success ? "bulk-status-ok" : "bulk-status-error"));
+    row.appendChild(createCell(result.baseAltText || result.error || "-"));
+    row.appendChild(createCell(result.seoAltText || "-"));
+    row.appendChild(createCell(result.seoTitle || "-"));
+    row.appendChild(createCell(result.filename || "-"));
+
+    bulkResultsBody.appendChild(row);
+  });
+}
+
+function resetBulkResults() {
+  latestBulkResults = [];
+  bulkResultsBody.replaceChildren();
+
+  const row = document.createElement("tr");
+  const cell = document.createElement("td");
+  cell.colSpan = 7;
+  cell.className = "bulk-empty";
+  cell.textContent = "Bulk results will appear here.";
+  row.appendChild(cell);
+  bulkResultsBody.appendChild(row);
+}
+
 function setStatus(message, isError = false) {
   statusMessage.textContent = message;
   statusMessage.style.color = isError ? "#a33616" : "";
+}
+
+function parseBulkUrls(value) {
+  return [...new Set(
+    String(value || "")
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  )];
+}
+
+async function copyText(text, button) {
+  try {
+    await navigator.clipboard.writeText(text);
+    const originalLabel = button.textContent;
+    button.textContent = "Copied";
+    window.setTimeout(() => {
+      button.textContent = originalLabel;
+    }, 1500);
+  } catch (_error) {
+    setStatus("Clipboard access was blocked in this browser.", true);
+  }
+}
+
+function convertBulkResultsToCsv(results) {
+  const header = ["sourceUrl", "status", "baseAltText", "seoAltText", "seoTitle", "filename", "imageSummary", "error"];
+  const rows = results.map((result) => [
+    result.sourceUrl,
+    result.success ? "success" : "error",
+    result.baseAltText || "",
+    result.seoAltText || "",
+    result.seoTitle || "",
+    result.filename || "",
+    result.imageSummary || "",
+    result.error || ""
+  ]);
+
+  return [header, ...rows]
+    .map((row) => row.map(csvEscape).join(","))
+    .join("\n");
+}
+
+function csvEscape(value) {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadTextFile({ text, filename, mimeType }) {
+  const blob = new Blob([text], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function buildBulkExportFilename(extension) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  return `alt-text-bulk-results-${year}${month}${day}-${hours}${minutes}.${extension}`;
+}
+
+function createCell(text, className = "") {
+  const cell = document.createElement("td");
+  cell.textContent = text;
+  if (className) {
+    cell.className = className;
+  }
+  return cell;
+}
+
+function createLinkCell(url) {
+  const cell = document.createElement("td");
+  cell.className = "bulk-url";
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noreferrer noopener";
+  link.textContent = url;
+  link.className = "bulk-url-link";
+
+  cell.appendChild(link);
+  return cell;
+}
+
+function createPreviewCell(result) {
+  const cell = document.createElement("td");
+  cell.className = "bulk-preview-cell";
+
+  if (!result.sourceUrl) {
+    cell.textContent = "-";
+    return cell;
+  }
+
+  const link = document.createElement("a");
+  link.href = result.sourceUrl;
+  link.target = "_blank";
+  link.rel = "noreferrer noopener";
+  link.className = "bulk-preview-link";
+
+  const image = document.createElement("img");
+  image.src = result.sourceUrl;
+  image.alt = result.baseAltText || result.seoTitle || "Bulk result preview";
+  image.className = "bulk-preview-image";
+  image.loading = "lazy";
+
+  link.appendChild(image);
+  cell.appendChild(link);
+  return cell;
 }
 
 function formatBytes(bytes) {

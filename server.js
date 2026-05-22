@@ -116,7 +116,11 @@ app.post("/api/generate", async (req, res) => {
     brandName = "",
     audience = "",
     tone = "",
-    filenameCase = "lowercase"
+    filenameCase = "lowercase",
+    pageContextUrl = "",
+    baseAltMaxWords = 12,
+    seoAltMaxWords = 20,
+    seoTitleMaxWords = 10
   } = req.body ?? {};
 
   if (!imageDataUrl || typeof imageDataUrl !== "string" || !imageDataUrl.startsWith("data:image/")) {
@@ -133,7 +137,11 @@ app.post("/api/generate", async (req, res) => {
       brandName,
       audience,
       tone,
-      filenameCase
+      filenameCase,
+      pageContextUrl,
+      baseAltMaxWords,
+      seoAltMaxWords,
+      seoTitleMaxWords
     });
 
     res.json(generated);
@@ -150,7 +158,11 @@ app.post("/api/generate-bulk", async (req, res) => {
     brandName = "",
     audience = "",
     tone = "",
-    filenameCase = "lowercase"
+    filenameCase = "lowercase",
+    pageContextUrl = "",
+    baseAltMaxWords = 12,
+    seoAltMaxWords = 20,
+    seoTitleMaxWords = 10
   } = req.body ?? {};
 
   if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
@@ -166,6 +178,7 @@ app.post("/api/generate-bulk", async (req, res) => {
   }
 
   try {
+    const sharedPageContextSummary = pageContextUrl ? await fetchPageContextSummary(pageContextUrl) : "";
     const results = [];
 
     for (const rawUrl of imageUrls) {
@@ -184,12 +197,18 @@ app.post("/api/generate-bulk", async (req, res) => {
           brandName,
           audience,
           tone,
-          filenameCase
+          filenameCase,
+          pageContextUrl,
+          pageContextSummary: sharedPageContextSummary,
+          baseAltMaxWords,
+          seoAltMaxWords,
+          seoTitleMaxWords
         });
 
         results.push({
           success: true,
           sourceUrl,
+          originalFilename: remoteImage.originalFilename,
           ...generated
         });
       } catch (error) {
@@ -215,18 +234,97 @@ app.post("/api/generate-bulk", async (req, res) => {
   }
 });
 
+app.post("/api/revise", async (req, res) => {
+  const {
+    imageDataUrl = "",
+    imageUrl = "",
+    originalFilename = "image",
+    seoKeyword = "",
+    brandName = "",
+    audience = "",
+    tone = "",
+    filenameCase = "lowercase",
+    pageContextUrl = "",
+    baseAltMaxWords = 12,
+    seoAltMaxWords = 20,
+    seoTitleMaxWords = 10,
+    revisionPrompt = "",
+    currentResult = null
+  } = req.body ?? {};
+
+  if (!String(revisionPrompt || "").trim()) {
+    return res.status(400).json({
+      error: "Add a revision prompt before revising the metadata."
+    });
+  }
+
+  try {
+    let resolvedImageDataUrl = imageDataUrl;
+    let resolvedOriginalFilename = originalFilename;
+
+    if (!resolvedImageDataUrl) {
+      if (!imageUrl || typeof imageUrl !== "string") {
+        return res.status(400).json({
+          error: "Provide an uploaded image or image URL before revising metadata."
+        });
+      }
+
+      const remoteImage = await fetchRemoteImageAsDataUrl(imageUrl);
+      resolvedImageDataUrl = remoteImage.imageDataUrl;
+      resolvedOriginalFilename = remoteImage.originalFilename;
+    }
+
+    if (!resolvedImageDataUrl.startsWith("data:image/")) {
+      return res.status(400).json({
+        error: "The image provided for revision is not a valid image."
+      });
+    }
+
+    const revised = await reviseMetadata({
+      imageDataUrl: resolvedImageDataUrl,
+      originalFilename: resolvedOriginalFilename,
+      seoKeyword,
+      brandName,
+      audience,
+      tone,
+      filenameCase,
+      pageContextUrl,
+      baseAltMaxWords,
+      seoAltMaxWords,
+      seoTitleMaxWords,
+      revisionPrompt,
+      currentResult
+    });
+
+    res.json(revised);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: resolveGenerationError(error) });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Alt text generator running at http://localhost:${port}`);
 });
 
-function buildPrompt({ originalFilename, seoKeyword, brandName, audience, tone }) {
+function buildPrompt({
+  originalFilename,
+  seoKeyword,
+  brandName,
+  audience,
+  tone,
+  pageContextSummary,
+  baseAltMaxWords,
+  seoAltMaxWords,
+  seoTitleMaxWords
+}) {
   const candidateKeywords = parseKeywords(seoKeyword);
   const guidance = [
     "Analyze the uploaded image and produce accessible and SEO-conscious image metadata.",
     "Describe only what is visually supported by the image.",
-    "Keep the base alt text concise, specific, and accessibility-first.",
-    "Make the SEO alt text natural and readable. Include only the most applicable keyword or keywords if they genuinely fit the visible content.",
-    "Create an SEO title that feels useful for an asset library or CMS.",
+    `Keep the base alt text concise, specific, accessibility-first, and around ${normalizeWordLimit(baseAltMaxWords, 12)} words or fewer.`,
+    `Make the SEO alt text natural and readable, and aim for around ${normalizeWordLimit(seoAltMaxWords, 20)} words or fewer.`,
+    `Create an SEO title that feels useful for an asset library or CMS, and aim for around ${normalizeWordLimit(seoTitleMaxWords, 10)} words or fewer.`,
     "Create a filename stem using lowercase words separated by hyphens.",
     "Do not stuff keywords. Avoid vague filler like 'image of' unless necessary for clarity.",
     "If there is visible text in the image, mention it only when it matters to understanding the image.",
@@ -243,7 +341,8 @@ function buildPrompt({ originalFilename, seoKeyword, brandName, audience, tone }
     `Candidate SEO keywords: ${candidateKeywords.length > 0 ? candidateKeywords.join(", ") : "None provided"}`,
     `Brand or site context: ${brandName || "None provided"}`,
     `Audience: ${audience || "General audience"}`,
-    `Tone: ${tone || "Clear and professional"}`
+    `Tone: ${tone || "Clear and professional"}`,
+    `Page context: ${pageContextSummary || "None provided"}`
   ];
 
   return `${guidance.join("\n")}\n\nContext:\n${context.join("\n")}`;
@@ -266,14 +365,27 @@ async function generateMetadata({
   brandName = "",
   audience = "",
   tone = "",
-  filenameCase = "lowercase"
+  filenameCase = "lowercase",
+  pageContextUrl = "",
+  pageContextSummary = "",
+  baseAltMaxWords = 12,
+  seoAltMaxWords = 20,
+  seoTitleMaxWords = 10
 }) {
+  const normalizedBaseAltMaxWords = normalizeWordLimit(baseAltMaxWords, 12);
+  const normalizedSeoAltMaxWords = normalizeWordLimit(seoAltMaxWords, 20);
+  const normalizedSeoTitleMaxWords = normalizeWordLimit(seoTitleMaxWords, 10);
+  const resolvedPageContextSummary = pageContextSummary || (pageContextUrl ? await fetchPageContextSummary(pageContextUrl) : "");
   const prompt = buildPrompt({
     originalFilename,
     seoKeyword,
     brandName,
     audience,
-    tone
+    tone,
+    pageContextSummary: resolvedPageContextSummary,
+    baseAltMaxWords: normalizedBaseAltMaxWords,
+    seoAltMaxWords: normalizedSeoAltMaxWords,
+    seoTitleMaxWords: normalizedSeoTitleMaxWords
   });
 
   const response = await fetchJson(`${ollamaUrl}/api/chat`, {
@@ -297,6 +409,155 @@ async function generateMetadata({
   });
 
   const payload = parseStructuredOutput(response);
+  return finalizeMetadataPayload({
+    payload,
+    imageDataUrl,
+    originalFilename,
+    seoKeyword,
+    brandName,
+    audience,
+    tone,
+    filenameCase,
+    resolvedPageContextSummary,
+    baseAltMaxWords: normalizedBaseAltMaxWords,
+    seoAltMaxWords: normalizedSeoAltMaxWords,
+    seoTitleMaxWords: normalizedSeoTitleMaxWords
+  });
+}
+
+async function reviseMetadata({
+  imageDataUrl,
+  originalFilename = "image",
+  seoKeyword = "",
+  brandName = "",
+  audience = "",
+  tone = "",
+  filenameCase = "lowercase",
+  pageContextUrl = "",
+  pageContextSummary = "",
+  baseAltMaxWords = 12,
+  seoAltMaxWords = 20,
+  seoTitleMaxWords = 10,
+  revisionPrompt = "",
+  currentResult = null
+}) {
+  const normalizedBaseAltMaxWords = normalizeWordLimit(baseAltMaxWords, 12);
+  const normalizedSeoAltMaxWords = normalizeWordLimit(seoAltMaxWords, 20);
+  const normalizedSeoTitleMaxWords = normalizeWordLimit(seoTitleMaxWords, 10);
+  const resolvedPageContextSummary = pageContextSummary || (pageContextUrl ? await fetchPageContextSummary(pageContextUrl) : "");
+  const prompt = buildRevisionPrompt({
+    originalFilename,
+    seoKeyword,
+    brandName,
+    audience,
+    tone,
+    pageContextSummary: resolvedPageContextSummary,
+    baseAltMaxWords: normalizedBaseAltMaxWords,
+    seoAltMaxWords: normalizedSeoAltMaxWords,
+    seoTitleMaxWords: normalizedSeoTitleMaxWords,
+    revisionPrompt,
+    currentResult
+  });
+
+  const response = await fetchJson(`${ollamaUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      format: responseSchema,
+      options: {
+        temperature: 0
+      },
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+          images: [extractBase64Image(imageDataUrl)]
+        }
+      ]
+    })
+  });
+
+  const payload = parseStructuredOutput(response);
+  return finalizeMetadataPayload({
+    payload,
+    imageDataUrl,
+    originalFilename,
+    seoKeyword,
+    brandName,
+    audience,
+    tone,
+    filenameCase,
+    resolvedPageContextSummary,
+    baseAltMaxWords: normalizedBaseAltMaxWords,
+    seoAltMaxWords: normalizedSeoAltMaxWords,
+    seoTitleMaxWords: normalizedSeoTitleMaxWords
+  });
+}
+
+function buildRevisionPrompt({
+  originalFilename,
+  seoKeyword,
+  brandName,
+  audience,
+  tone,
+  pageContextSummary,
+  baseAltMaxWords,
+  seoAltMaxWords,
+  seoTitleMaxWords,
+  revisionPrompt,
+  currentResult
+}) {
+  const candidateKeywords = parseKeywords(seoKeyword);
+  const currentKeywords = dedupeStrings(currentResult?.usedKeywords || currentResult?.seoKeywords);
+  const guidance = [
+    "Analyze the uploaded image and revise the image metadata.",
+    "Follow the custom revision instruction while staying grounded in the actual image and page context.",
+    "Do not invent details that are not visible or reasonably supported by the page context.",
+    `Keep the base alt text concise, accessibility-first, and around ${normalizeWordLimit(baseAltMaxWords, 12)} words or fewer.`,
+    `Keep the SEO alt text natural and readable, and aim for around ${normalizeWordLimit(seoAltMaxWords, 20)} words or fewer.`,
+    `Create an SEO title that feels useful for an asset library or CMS, and aim for around ${normalizeWordLimit(seoTitleMaxWords, 10)} words or fewer.`,
+    "Keep the filename stem lowercase and hyphenated.",
+    "If candidate keywords are provided, choose only the ones that truly fit the image and revised wording.",
+    "The returned seo_keywords should reflect the keyword or keywords actually used in the revised result whenever possible.",
+    "Return valid JSON that matches the provided schema."
+  ];
+
+  const context = [
+    `Custom revision instruction: ${String(revisionPrompt || "").trim()}`,
+    `Original filename: ${originalFilename}`,
+    `Candidate SEO keywords: ${candidateKeywords.length > 0 ? candidateKeywords.join(", ") : "None provided"}`,
+    `Currently used keywords: ${currentKeywords.length > 0 ? currentKeywords.join(", ") : "None"}`,
+    `Brand or site context: ${brandName || "None provided"}`,
+    `Audience: ${audience || "General audience"}`,
+    `Tone: ${tone || "Clear and professional"}`,
+    `Page context: ${pageContextSummary || "None provided"}`,
+    `Current image summary: ${String(currentResult?.imageSummary || "").trim() || "None"}`,
+    `Current base alt text: ${String(currentResult?.baseAltText || "").trim() || "None"}`,
+    `Current SEO alt text: ${String(currentResult?.seoAltText || "").trim() || "None"}`,
+    `Current SEO title: ${String(currentResult?.seoTitle || "").trim() || "None"}`,
+    `Current filename: ${String(currentResult?.filename || "").trim() || "None"}`,
+    `Current notes: ${Array.isArray(currentResult?.notes) && currentResult.notes.length > 0 ? currentResult.notes.join(" | ") : "None"}`
+  ];
+
+  return `${guidance.join("\n")}\n\nContext:\n${context.join("\n")}`;
+}
+
+async function finalizeMetadataPayload({
+  payload,
+  imageDataUrl,
+  originalFilename,
+  seoKeyword,
+  brandName,
+  audience,
+  tone,
+  filenameCase,
+  resolvedPageContextSummary,
+  baseAltMaxWords,
+  seoAltMaxWords,
+  seoTitleMaxWords
+}) {
   const extension = inferExtension(imageDataUrl, originalFilename);
   const candidateKeywords = parseKeywords(seoKeyword);
   const normalizedKeywords = normalizeSelectedKeywords({
@@ -315,31 +576,51 @@ async function generateMetadata({
         selectedKeywords: normalizedKeywords,
         brandName,
         audience,
-        tone
+        tone,
+        pageContextSummary: resolvedPageContextSummary,
+        baseAltMaxWords,
+        seoAltMaxWords,
+        seoTitleMaxWords
       })
     : null;
 
-  const baseAltText = cleanupSentence(
-    refinedCopy?.base_alt_text || applyPrimaryKeywordToBaseAlt(payload.base_alt_text, primaryKeyword, 125),
-    125
+  const baseAltText = trimToWordLimit(
+    cleanupSentence(
+      refinedCopy?.base_alt_text || applyPrimaryKeywordToBaseAlt(payload.base_alt_text, primaryKeyword, 125),
+      125
+    ),
+    baseAltMaxWords
   );
-  const seoAltText = cleanupSentence(
-    refinedCopy?.seo_alt_text || applyPrimaryKeywordToSentence(payload.seo_alt_text, primaryKeyword, 180),
-    180
+  const seoAltText = trimToWordLimit(
+    cleanupSentence(
+      refinedCopy?.seo_alt_text || applyPrimaryKeywordToSentence(payload.seo_alt_text, primaryKeyword, 180),
+      180
+    ),
+    seoAltMaxWords
   );
-  const seoTitle = cleanupSentence(
-    refinedCopy?.seo_title || applyPrimaryKeywordToTitle(payload.seo_title, primaryKeyword, 70),
-    70
+  const seoTitle = trimToWordLimit(
+    cleanupSentence(
+      refinedCopy?.seo_title || applyPrimaryKeywordToTitle(payload.seo_title, primaryKeyword, 70),
+      70
+    ),
+    seoTitleMaxWords
   );
   const filenameStem = refinedCopy?.filename_stem || applyPrimaryKeywordToFilename(payload.filename_stem, primaryKeyword);
+  const formattedFilename = formatFilenameCase(`${sanitizeFilename(filenameStem)}${extension}`, filenameCase);
+  const exactUsedKeywords = extractExactUsedKeywords({
+    candidateKeywords,
+    selectedKeywords: normalizedKeywords,
+    resultFields: [baseAltText, seoAltText, seoTitle, formattedFilename]
+  });
 
   return {
     imageSummary: payload.image_summary.trim(),
     baseAltText,
     seoAltText,
     seoTitle,
-    filename: formatFilenameCase(`${sanitizeFilename(filenameStem)}${extension}`, filenameCase),
-    seoKeywords: normalizedKeywords,
+    filename: formattedFilename,
+    usedKeywords: exactUsedKeywords,
+    seoKeywords: exactUsedKeywords,
     notes: dedupeStrings(payload.notes),
     model,
     provider: "ollama"
@@ -355,7 +636,11 @@ async function refineMetadataCopy({
   selectedKeywords,
   brandName,
   audience,
-  tone
+  tone,
+  pageContextSummary,
+  baseAltMaxWords,
+  seoAltMaxWords,
+  seoTitleMaxWords
 }) {
   try {
     const prompt = [
@@ -365,9 +650,9 @@ async function refineMetadataCopy({
       "You may inflect wording for natural English, such as turning 'luxury' into 'luxurious' when appropriate.",
       "Silently correct obvious spelling mistakes in candidate keywords when rewriting natural copy.",
       "Do not start seo_alt_text with a raw keyword fragment followed by a comma unless it sounds fully natural.",
-      "Keep base_alt_text accessibility-first and concise.",
-      "Keep seo_alt_text descriptive and natural.",
-      "Keep seo_title concise and readable.",
+      `Keep base_alt_text accessibility-first, concise, and around ${normalizeWordLimit(baseAltMaxWords, 12)} words or fewer.`,
+      `Keep seo_alt_text descriptive, natural, and around ${normalizeWordLimit(seoAltMaxWords, 20)} words or fewer.`,
+      `Keep seo_title concise, readable, and around ${normalizeWordLimit(seoTitleMaxWords, 10)} words or fewer.`,
       "Keep filename_stem lowercase and hyphenated.",
       "Return valid JSON only.",
       "",
@@ -376,6 +661,7 @@ async function refineMetadataCopy({
       `Brand or site context: ${brandName || "None provided"}`,
       `Audience: ${audience || "General audience"}`,
       `Tone: ${tone || "Clear and professional"}`,
+      `Page context: ${pageContextSummary || "None provided"}`,
       `Current base alt text: ${String(baseAltText || "").trim()}`,
       `Current seo alt text: ${String(seoAltText || "").trim()}`,
       `Current seo title: ${String(seoTitle || "").trim()}`,
@@ -469,6 +755,49 @@ async function fetchRemoteImageAsDataUrl(url) {
   };
 }
 
+async function fetchPageContextSummary(url) {
+  let parsedUrl;
+
+  try {
+    parsedUrl = new URL(url);
+  } catch (_error) {
+    const error = new Error("Invalid page context URL.");
+    error.code = "INVALID_PAGE_URL";
+    throw error;
+  }
+
+  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+    const error = new Error("Only HTTP and HTTPS page URLs are supported.");
+    error.code = "INVALID_PAGE_PROTOCOL";
+    throw error;
+  }
+
+  const response = await fetch(parsedUrl, {
+    redirect: "follow",
+    headers: {
+      Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+      "User-Agent": "AltTextGenerator/1.0"
+    }
+  });
+
+  if (!response.ok) {
+    const error = new Error(`Page crawl failed with status ${response.status}.`);
+    error.code = "PAGE_FETCH_FAILED";
+    throw error;
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!contentType.includes("text/html")) {
+    const error = new Error("The page context URL did not return an HTML page.");
+    error.code = "PAGE_NOT_HTML";
+    throw error;
+  }
+
+  const html = (await response.text()).slice(0, 300000);
+  return extractPageContextSummary(html, parsedUrl);
+}
+
 function extractBase64Image(imageDataUrl) {
   const match = String(imageDataUrl).match(/^data:image\/[a-zA-Z0-9.+-]+;base64,(.+)$/);
 
@@ -483,12 +812,19 @@ function cleanupSentence(value, maxLength) {
   const cleaned = String(value || "")
     .replace(/\s+/g, " ")
     .trim();
+  return cleaned;
+}
 
-  if (cleaned.length <= maxLength) {
+function trimToWordLimit(value, maxWords) {
+  const cleaned = cleanupSentence(value);
+  const normalizedMaxWords = normalizeWordLimit(maxWords, 12);
+  const words = cleaned.split(/\s+/).filter(Boolean);
+
+  if (words.length <= normalizedMaxWords) {
     return cleaned;
   }
 
-  return `${cleaned.slice(0, maxLength - 3).trimEnd()}...`;
+  return words.slice(0, normalizedMaxWords).join(" ").replace(/[,:;.-]+$/g, "").trim();
 }
 
 function sanitizeFilename(value) {
@@ -518,6 +854,109 @@ function parseKeywords(value) {
   )];
 }
 
+function normalizeWordLimit(value, fallback) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.min(parsed, 80);
+}
+
+function extractPageContextSummary(html, parsedUrl) {
+  const title = extractTagText(html, "title");
+  const metaDescription = extractMetaContent(html, "description");
+  const headings = extractMultipleTagTexts(html, ["h1", "h2"], 6).join(" | ");
+  const paragraphText = extractVisibleText(html)
+    .split(/\n+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 40)
+    .slice(0, 4)
+    .join(" ");
+
+  const parts = [
+    `Page URL: ${parsedUrl.href}`,
+    title ? `Title: ${title}` : "",
+    metaDescription ? `Meta description: ${metaDescription}` : "",
+    headings ? `Headings: ${headings}` : "",
+    paragraphText ? `Visible content excerpt: ${paragraphText}` : ""
+  ].filter(Boolean);
+
+  return parts.join(" | ").slice(0, 2200);
+}
+
+function extractTagText(html, tagName) {
+  const pattern = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "i");
+  const match = html.match(pattern);
+  return match ? cleanupSentence(decodeHtmlEntities(stripHtml(match[1]))) : "";
+}
+
+function extractMultipleTagTexts(html, tagNames, limit) {
+  const results = [];
+
+  for (const tagName of tagNames) {
+    const pattern = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "gi");
+    let match;
+
+    while ((match = pattern.exec(html)) !== null && results.length < limit) {
+      const cleaned = cleanupSentence(decodeHtmlEntities(stripHtml(match[1])));
+      if (cleaned) {
+        results.push(cleaned);
+      }
+    }
+  }
+
+  return results;
+}
+
+function extractMetaContent(html, metaName) {
+  const patterns = [
+    new RegExp(`<meta[^>]+name=["']${metaName}["'][^>]+content=["']([\\s\\S]*?)["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+content=["']([\\s\\S]*?)["'][^>]+name=["']${metaName}["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+property=["']og:${metaName}["'][^>]+content=["']([\\s\\S]*?)["'][^>]*>`, "i")
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match) {
+      return cleanupSentence(decodeHtmlEntities(stripHtml(match[1])));
+    }
+  }
+
+  return "";
+}
+
+function extractVisibleText(html) {
+  return cleanupSentence(
+    decodeHtmlEntities(
+      stripHtml(
+        html
+          .replace(/<script[\s\S]*?<\/script>/gi, " ")
+          .replace(/<style[\s\S]*?<\/style>/gi, " ")
+          .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+          .replace(/<\/(p|div|section|article|li|h1|h2|h3|h4|h5|h6)>/gi, "\n")
+      )
+    )
+      .replace(/\s*\n\s*/g, "\n")
+      .replace(/\n{2,}/g, "\n")
+  );
+}
+
+function stripHtml(value) {
+  return String(value || "").replace(/<[^>]+>/g, " ");
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
 function normalizeSelectedKeywords({ selectedKeywords, candidateKeywords, fallbackText }) {
   if (candidateKeywords.length === 0) {
     return dedupeStrings(selectedKeywords);
@@ -540,6 +979,15 @@ function normalizeSelectedKeywords({ selectedKeywords, candidateKeywords, fallba
 
   const bestFallbackCandidate = chooseBestFallbackKeyword(candidateKeywords, haystack);
   return bestFallbackCandidate ? [bestFallbackCandidate] : [];
+}
+
+function extractExactUsedKeywords({ candidateKeywords, selectedKeywords, resultFields }) {
+  const pool = candidateKeywords.length > 0 ? candidateKeywords : selectedKeywords;
+  const exactMatches = pool.filter((keyword) =>
+    resultFields.some((field) => containsNormalized(field, keyword))
+  );
+
+  return dedupeStrings(exactMatches);
 }
 
 function applyPrimaryKeywordToSentence(sentence, primaryKeyword, maxLength) {
@@ -725,6 +1173,22 @@ function resolveGenerationError(error) {
 }
 
 function resolveBulkItemError(error) {
+  if (error?.code === "INVALID_PAGE_URL") {
+    return "Invalid page context URL.";
+  }
+
+  if (error?.code === "INVALID_PAGE_PROTOCOL") {
+    return "Only HTTP and HTTPS page context URLs are supported.";
+  }
+
+  if (error?.code === "PAGE_NOT_HTML") {
+    return "The page context URL did not return an HTML page.";
+  }
+
+  if (error?.code === "PAGE_FETCH_FAILED") {
+    return error.message;
+  }
+
   if (error?.code === "INVALID_URL") {
     return "Invalid URL.";
   }

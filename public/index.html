@@ -85,13 +85,38 @@
                 <option value="titlecase">Title Case</option>
               </select>
             </label>
+
+            <label class="field field-wide">
+              <span>Page context URL</span>
+              <input
+                id="page-context-url"
+                name="pageContextUrl"
+                type="url"
+                placeholder="Optional: paste the page URL so the app can crawl page context for better aligned alt text"
+              />
+            </label>
+
+            <label class="field">
+              <span>Base alt max words</span>
+              <input id="base-alt-max-words" name="baseAltMaxWords" type="number" min="3" max="40" value="12" />
+            </label>
+
+            <label class="field">
+              <span>SEO alt max words</span>
+              <input id="seo-alt-max-words" name="seoAltMaxWords" type="number" min="4" max="60" value="20" />
+            </label>
+
+            <label class="field">
+              <span>SEO title max words</span>
+              <input id="seo-title-max-words" name="seoTitleMaxWords" type="number" min="3" max="24" value="10" />
+            </label>
           </div>
 
           <button class="generate-button" type="submit" id="generate-button">Generate metadata</button>
           <p class="status-message" id="status-message" aria-live="polite"></p>
         </form>
 
-        <section class="panel preview-panel">
+        <section class="panel preview-panel" id="preview-panel">
           <div class="preview-frame">
             <img id="image-preview" alt="" hidden />
             <div class="preview-placeholder" id="preview-placeholder">
@@ -154,7 +179,7 @@
         </article>
 
         <article class="panel result-card">
-          <p class="card-label">SEO keywords</p>
+          <p class="card-label">Used keywords</p>
           <div id="seo-keywords" class="chips"></div>
         </article>
 
@@ -164,6 +189,26 @@
             <li>Notes will appear after analysis.</li>
           </ul>
         </article>
+      </section>
+
+      <section class="panel revise-panel" id="single-revise-panel" hidden>
+        <div class="revise-panel-header">
+          <div>
+            <p class="card-label">Revise result</p>
+            <p class="bulk-results-subtitle">Give the model a rewrite prompt while keeping the result grounded in the same image.</p>
+          </div>
+        </div>
+        <label class="field field-stack">
+          <span>Revision prompt</span>
+          <textarea
+            id="single-revise-prompt"
+            rows="4"
+            placeholder="Example: Make the SEO alt text sound more editorial and keep only the most natural keyword."
+          ></textarea>
+        </label>
+        <div class="revise-actions">
+          <button type="button" class="copy-button revise-button" id="single-revise-button">Revise result</button>
+        </div>
       </section>
 
       <section class="panel bulk-results-panel" id="bulk-results-panel" hidden>
@@ -190,11 +235,13 @@
                 <th>SEO alt text</th>
                 <th>SEO title</th>
                 <th>Filename</th>
+                <th>Used keywords</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody id="bulk-results-body">
               <tr>
-                <td colspan="7" class="bulk-empty">Bulk results will appear here.</td>
+                <td colspan="9" class="bulk-empty">Bulk results will appear here.</td>
               </tr>
             </tbody>
           </table>

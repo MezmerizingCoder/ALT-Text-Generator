@@ -9,6 +9,11 @@ const singleModePanel = document.querySelector("#single-mode-panel");
 const bulkModePanel = document.querySelector("#bulk-mode-panel");
 const bulkImageUrls = document.querySelector("#bulk-image-urls");
 const filenameCase = document.querySelector("#filename-case");
+const pageContextUrl = document.querySelector("#page-context-url");
+const baseAltMaxWords = document.querySelector("#base-alt-max-words");
+const seoAltMaxWords = document.querySelector("#seo-alt-max-words");
+const seoTitleMaxWords = document.querySelector("#seo-title-max-words");
+const previewPanel = document.querySelector("#preview-panel");
 const previewImage = document.querySelector("#image-preview");
 const previewPlaceholder = document.querySelector("#preview-placeholder");
 const originalName = document.querySelector("#original-name");
@@ -20,6 +25,9 @@ const bulkResultsBody = document.querySelector("#bulk-results-body");
 const copyBulkJsonButton = document.querySelector("#copy-bulk-json");
 const copyBulkCsvButton = document.querySelector("#copy-bulk-csv");
 const downloadBulkCsvButton = document.querySelector("#download-bulk-csv");
+const singleRevisePanel = document.querySelector("#single-revise-panel");
+const singleRevisePrompt = document.querySelector("#single-revise-prompt");
+const singleReviseButton = document.querySelector("#single-revise-button");
 
 const resultFields = {
   imageSummary: document.querySelector("#image-summary"),
@@ -36,6 +44,7 @@ const copyButtons = document.querySelectorAll("[data-copy-target]");
 let selectedImage = null;
 let activeMode = "single";
 let latestBulkResults = [];
+let currentSingleResult = null;
 
 modeButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -99,7 +108,11 @@ form.addEventListener("submit", async (event) => {
           brandName: document.querySelector("#brand-name").value.trim(),
           audience: document.querySelector("#audience").value.trim(),
           tone: document.querySelector("#tone").value.trim(),
-          filenameCase: filenameCase.value
+          filenameCase: filenameCase.value,
+          pageContextUrl: pageContextUrl.value.trim(),
+          baseAltMaxWords: parseWordLimit(baseAltMaxWords.value, 12),
+          seoAltMaxWords: parseWordLimit(seoAltMaxWords.value, 20),
+          seoTitleMaxWords: parseWordLimit(seoTitleMaxWords.value, 10)
         })
       });
 
@@ -128,7 +141,11 @@ form.addEventListener("submit", async (event) => {
       brandName: document.querySelector("#brand-name").value.trim(),
       audience: document.querySelector("#audience").value.trim(),
       tone: document.querySelector("#tone").value.trim(),
-      filenameCase: filenameCase.value
+      filenameCase: filenameCase.value,
+      pageContextUrl: pageContextUrl.value.trim(),
+      baseAltMaxWords: parseWordLimit(baseAltMaxWords.value, 12),
+      seoAltMaxWords: parseWordLimit(seoAltMaxWords.value, 20),
+      seoTitleMaxWords: parseWordLimit(seoTitleMaxWords.value, 10)
     };
 
     const response = await fetch("/api/generate", {
@@ -194,6 +211,131 @@ downloadBulkCsvButton.addEventListener("click", () => {
   });
 });
 
+singleReviseButton.addEventListener("click", async () => {
+  if (!selectedImage || !currentSingleResult) {
+    setStatus("Generate a single-image result before revising it.", true);
+    return;
+  }
+
+  const revisionPrompt = singleRevisePrompt.value.trim();
+
+  if (!revisionPrompt) {
+    setStatus("Add a revision prompt before revising the result.", true);
+    return;
+  }
+
+  const originalLabel = singleReviseButton.textContent;
+  singleReviseButton.disabled = true;
+  singleReviseButton.textContent = "Revising...";
+  setStatus("Revising the single-image result...");
+
+  try {
+    const response = await fetch("/api/revise", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildRevisionPayload({
+        revisionPrompt,
+        imageDataUrl: selectedImage.dataUrl,
+        originalFilename: selectedImage.file.name,
+        currentResult: currentSingleResult
+      }))
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Unable to revise the single-image result.");
+    }
+
+    renderResults(data);
+    singleRevisePrompt.value = "";
+    setStatus(`Single-image result revised with ${data.model} on local Ollama.`);
+  } catch (error) {
+    setStatus(error.message || "Something went wrong while revising the result.", true);
+  } finally {
+    singleReviseButton.disabled = false;
+    singleReviseButton.textContent = originalLabel;
+  }
+});
+
+bulkResultsBody.addEventListener("click", async (event) => {
+  const toggleButton = event.target.closest("[data-bulk-toggle]");
+
+  if (toggleButton) {
+    toggleBulkRevisionRow(toggleButton.getAttribute("data-bulk-toggle"));
+    return;
+  }
+
+  const reviseButton = event.target.closest("[data-bulk-revise]");
+
+  if (!reviseButton) {
+    return;
+  }
+
+  const rowId = reviseButton.getAttribute("data-bulk-revise");
+  const reviseRow = bulkResultsBody.querySelector(`[data-revise-row="${rowId}"]`);
+  const promptField = reviseRow?.querySelector("textarea");
+  const prompt = promptField?.value?.trim() || "";
+
+  if (!prompt) {
+    setStatus("Add a revision prompt before revising that row.", true);
+    return;
+  }
+
+  const result = latestBulkResults.find((item) => item.rowId === rowId);
+
+  if (!result || !result.success) {
+    setStatus("Only successful bulk rows can be revised.", true);
+    return;
+  }
+
+  const originalLabel = reviseButton.textContent;
+  reviseButton.disabled = true;
+  reviseButton.textContent = "Revising...";
+  setStatus("Revising the selected bulk row...");
+
+  try {
+    const response = await fetch("/api/revise", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildRevisionPayload({
+        revisionPrompt: prompt,
+        imageUrl: result.sourceUrl,
+        originalFilename: result.originalFilename || "remote-image",
+        currentResult: result
+      }))
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Unable to revise this bulk row.");
+    }
+
+    latestBulkResults = latestBulkResults.map((item) =>
+      item.rowId === rowId
+        ? { ...item, ...data, success: true, sourceUrl: item.sourceUrl, originalFilename: item.originalFilename, rowId }
+        : item
+    );
+    renderBulkResults(latestBulkResults);
+    toggleBulkRevisionRow(rowId, true);
+    const refreshedRow = bulkResultsBody.querySelector(`[data-revise-row="${rowId}"] textarea`);
+    if (refreshedRow) {
+      refreshedRow.value = prompt;
+    }
+    setStatus(`Bulk row revised with ${data.model} on local Ollama.`);
+  } catch (error) {
+    setStatus(error.message || "Something went wrong while revising this bulk row.", true);
+  } finally {
+    reviseButton.disabled = false;
+    reviseButton.textContent = originalLabel;
+  }
+});
+
+resetResults();
+resetBulkResults();
+setMode(activeMode);
+
 async function handleSelectedFile(file) {
   if (!file) {
     return;
@@ -231,9 +373,11 @@ function setMode(mode) {
   const isBulk = activeMode === "bulk";
   bulkModePanel.hidden = !isBulk;
   singleModePanel.hidden = isBulk;
+  previewPanel.hidden = isBulk;
   bulkResultsPanel.hidden = !isBulk;
   resultsGrid.hidden = isBulk;
   imageInput.required = !isBulk;
+  generateButton.textContent = isBulk ? "Generate bulk metadata" : "Generate metadata";
 
   if (isBulk) {
     resetBulkResults();
@@ -244,26 +388,15 @@ function setMode(mode) {
 }
 
 function renderResults(data) {
+  currentSingleResult = normalizeResultRecord(data);
   resultFields.imageSummary.textContent = data.imageSummary;
   resultFields.baseAltText.textContent = data.baseAltText;
   resultFields.seoAltText.textContent = data.seoAltText;
   resultFields.seoTitle.textContent = data.seoTitle;
   resultFields.filename.textContent = data.filename;
+  singleRevisePanel.hidden = false;
 
-  seoKeywords.replaceChildren();
-  if (data.seoKeywords.length === 0) {
-    const emptyChip = document.createElement("span");
-    emptyChip.className = "chip";
-    emptyChip.textContent = "No keywords returned";
-    seoKeywords.appendChild(emptyChip);
-  } else {
-    data.seoKeywords.forEach((keyword) => {
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.textContent = keyword;
-      seoKeywords.appendChild(chip);
-    });
-  }
+  renderKeywordChips(seoKeywords, data.usedKeywords || data.seoKeywords);
 
   notesList.replaceChildren();
   if (data.notes.length === 0) {
@@ -280,6 +413,7 @@ function renderResults(data) {
 }
 
 function resetResults() {
+  currentSingleResult = null;
   resultFields.imageSummary.textContent = "No analysis yet.";
   resultFields.baseAltText.textContent = "Generate to fill this field.";
   resultFields.seoAltText.textContent = "Generate to fill this field.";
@@ -287,6 +421,8 @@ function resetResults() {
   resultFields.filename.textContent = "Generate to fill this field.";
   seoKeywords.replaceChildren();
   notesList.replaceChildren();
+  singleRevisePanel.hidden = true;
+  singleRevisePrompt.value = "";
 
   const note = document.createElement("li");
   note.textContent = "Notes will appear after analysis.";
@@ -302,19 +438,37 @@ function renderBulkResults(results) {
     return;
   }
 
-  results.forEach((result) => {
+  results.forEach((rawResult, index) => {
+    const result = normalizeResultRecord({
+      ...rawResult,
+      rowId: rawResult.rowId || `bulk-row-${index + 1}`
+    });
     const row = document.createElement("tr");
+    row.dataset.resultRow = result.rowId;
 
     row.appendChild(createPreviewCell(result));
     row.appendChild(createLinkCell(result.sourceUrl));
-    row.appendChild(createCell(result.success ? "Success" : "Error", result.success ? "bulk-status-ok" : "bulk-status-error"));
-    row.appendChild(createCell(result.baseAltText || result.error || "-"));
-    row.appendChild(createCell(result.seoAltText || "-"));
-    row.appendChild(createCell(result.seoTitle || "-"));
-    row.appendChild(createCell(result.filename || "-"));
+    row.appendChild(createCell(
+      result.success ? "Success" : "Error",
+      `bulk-status-cell ${result.success ? "bulk-status-ok" : "bulk-status-error"}`
+    ));
+    row.appendChild(createCell(result.baseAltText || result.error || "-", "bulk-copy-cell bulk-base-cell"));
+    row.appendChild(createCell(result.seoAltText || "-", "bulk-copy-cell bulk-seo-alt-cell"));
+    row.appendChild(createCell(result.seoTitle || "-", "bulk-copy-cell bulk-title-cell"));
+    row.appendChild(createCell(result.filename || "-", "bulk-filename-cell"));
+    row.appendChild(createKeywordsCell(result.usedKeywords || result.seoKeywords));
+    row.appendChild(createBulkActionsCell(result));
 
     bulkResultsBody.appendChild(row);
+    bulkResultsBody.appendChild(createBulkRevisionRow(result));
   });
+
+  latestBulkResults = results.map((rawResult, index) =>
+    normalizeResultRecord({
+      ...rawResult,
+      rowId: rawResult.rowId || `bulk-row-${index + 1}`
+    })
+  );
 }
 
 function resetBulkResults() {
@@ -323,7 +477,7 @@ function resetBulkResults() {
 
   const row = document.createElement("tr");
   const cell = document.createElement("td");
-  cell.colSpan = 7;
+  cell.colSpan = 9;
   cell.className = "bulk-empty";
   cell.textContent = "Bulk results will appear here.";
   row.appendChild(cell);
@@ -344,6 +498,11 @@ function parseBulkUrls(value) {
   )];
 }
 
+function parseWordLimit(value, fallback) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 async function copyText(text, button) {
   try {
     await navigator.clipboard.writeText(text);
@@ -358,15 +517,17 @@ async function copyText(text, button) {
 }
 
 function convertBulkResultsToCsv(results) {
-  const header = ["sourceUrl", "status", "baseAltText", "seoAltText", "seoTitle", "filename", "imageSummary", "error"];
+  const header = ["sourceUrl", "status", "usedKeywords", "baseAltText", "seoAltText", "seoTitle", "filename", "imageSummary", "notes", "error"];
   const rows = results.map((result) => [
     result.sourceUrl,
     result.success ? "success" : "error",
+    (result.usedKeywords || result.seoKeywords || []).join(" | "),
     result.baseAltText || "",
     result.seoAltText || "",
     result.seoTitle || "",
     result.filename || "",
     result.imageSummary || "",
+    (result.notes || []).join(" | "),
     result.error || ""
   ]);
 
@@ -411,6 +572,13 @@ function createCell(text, className = "") {
   return cell;
 }
 
+function createKeywordsCell(keywords) {
+  const cell = document.createElement("td");
+  cell.className = "bulk-keywords-cell chips";
+  renderKeywordChips(cell, keywords);
+  return cell;
+}
+
 function createLinkCell(url) {
   const cell = document.createElement("td");
   cell.className = "bulk-url";
@@ -424,6 +592,70 @@ function createLinkCell(url) {
 
   cell.appendChild(link);
   return cell;
+}
+
+function createBulkActionsCell(result) {
+  const cell = document.createElement("td");
+  cell.className = "bulk-actions-cell";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "copy-button";
+  button.textContent = result.success ? "Revise" : "Unavailable";
+  button.disabled = !result.success;
+  button.setAttribute("data-bulk-toggle", result.rowId);
+
+  cell.appendChild(button);
+  return cell;
+}
+
+function createBulkRevisionRow(result) {
+  const row = document.createElement("tr");
+  row.hidden = true;
+  row.dataset.reviseRow = result.rowId;
+  row.className = "bulk-revise-row";
+
+  const cell = document.createElement("td");
+  cell.colSpan = 9;
+
+  if (!result.success) {
+    cell.className = "bulk-empty";
+    cell.textContent = "Only successful rows can be revised.";
+    row.appendChild(cell);
+    return row;
+  }
+
+  const shell = document.createElement("div");
+  shell.className = "bulk-revise-shell";
+
+  const label = document.createElement("label");
+  label.className = "field field-stack";
+
+  const span = document.createElement("span");
+  span.textContent = "Revision prompt";
+
+  const textarea = document.createElement("textarea");
+  textarea.rows = 3;
+  textarea.placeholder = "Example: Make the alt text sound more natural and keep only the strongest keyword.";
+
+  label.appendChild(span);
+  label.appendChild(textarea);
+
+  const actions = document.createElement("div");
+  actions.className = "revise-actions";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "copy-button revise-button";
+  button.textContent = "Apply revision";
+  button.setAttribute("data-bulk-revise", result.rowId);
+
+  actions.appendChild(button);
+  shell.appendChild(label);
+  shell.appendChild(actions);
+  cell.appendChild(shell);
+  row.appendChild(cell);
+  return row;
 }
 
 function createPreviewCell(result) {
@@ -450,6 +682,72 @@ function createPreviewCell(result) {
   link.appendChild(image);
   cell.appendChild(link);
   return cell;
+}
+
+function renderKeywordChips(container, keywords) {
+  container.replaceChildren();
+  const values = Array.isArray(keywords) ? keywords.filter(Boolean) : [];
+
+  if (values.length === 0) {
+    const emptyChip = document.createElement("span");
+    emptyChip.className = "chip";
+    emptyChip.textContent = "No keywords used";
+    container.appendChild(emptyChip);
+    return;
+  }
+
+  values.forEach((keyword) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = keyword;
+    container.appendChild(chip);
+  });
+}
+
+function normalizeResultRecord(result) {
+  return {
+    ...result,
+    usedKeywords: Array.isArray(result?.usedKeywords)
+      ? result.usedKeywords
+      : Array.isArray(result?.seoKeywords)
+        ? result.seoKeywords
+        : [],
+    notes: Array.isArray(result?.notes) ? result.notes : []
+  };
+}
+
+function buildRevisionPayload({ revisionPrompt, imageDataUrl = "", imageUrl = "", originalFilename = "image", currentResult }) {
+  return {
+    revisionPrompt,
+    imageDataUrl,
+    imageUrl,
+    originalFilename,
+    seoKeyword: document.querySelector("#seo-keyword").value.trim(),
+    brandName: document.querySelector("#brand-name").value.trim(),
+    audience: document.querySelector("#audience").value.trim(),
+    tone: document.querySelector("#tone").value.trim(),
+    filenameCase: filenameCase.value,
+    pageContextUrl: pageContextUrl.value.trim(),
+    baseAltMaxWords: parseWordLimit(baseAltMaxWords.value, 12),
+    seoAltMaxWords: parseWordLimit(seoAltMaxWords.value, 20),
+    seoTitleMaxWords: parseWordLimit(seoTitleMaxWords.value, 10),
+    currentResult
+  };
+}
+
+function toggleBulkRevisionRow(rowId, forceOpen = false) {
+  const row = bulkResultsBody.querySelector(`[data-revise-row="${rowId}"]`);
+  if (!row) {
+    return;
+  }
+
+  const shouldOpen = forceOpen || row.hidden;
+  row.hidden = !shouldOpen;
+
+  const button = bulkResultsBody.querySelector(`[data-bulk-toggle="${rowId}"]`);
+  if (button && !button.disabled) {
+    button.textContent = shouldOpen ? "Hide revise" : "Revise";
+  }
 }
 
 function formatBytes(bytes) {
